@@ -1,14 +1,11 @@
 import os
-import numpy as np
-import SharedArray as SA
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from util.voxelize import voxelize
-from util.data_util import sa_create, collate_fn
+from util.data_util import collate_fn
 from util.data_util import data_prepare_v101 as data_prepare
-
 
 
 class S3DIS(Dataset):
@@ -47,12 +44,14 @@ class S3DIS(Dataset):
 
 
 if __name__ == '__main__':
-    data_root = '/home/share/Dataset/s3dis'
+    data_root = '/home/Pointnet_Pointnet2_pytorch/data/stanford_indoor3d'
     test_area, voxel_size, voxel_max = 5, 0.04, 80000
-
     point_data = S3DIS(split='train', data_root=data_root, test_area=test_area, voxel_size=voxel_size, voxel_max=voxel_max)
     print('point data size:', point_data.__len__())
-    import torch, time, random
+    import random
+    import time
+
+    import torch
     manual_seed = 123
     random.seed(manual_seed)
     np.random.seed(manual_seed)
@@ -60,7 +59,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(manual_seed)
     def worker_init_fn(worker_id):
         random.seed(manual_seed + worker_id)
-    train_loader = torch.utils.data.DataLoader(point_data, batch_size=1, shuffle=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+    train_loader = torch.utils.data.DataLoader(point_data, batch_size=1, shuffle=False, num_workers=0, pin_memory=False, collate_fn=collate_fn)
     for idx in range(1):
         end = time.time()
         voxel_num = []

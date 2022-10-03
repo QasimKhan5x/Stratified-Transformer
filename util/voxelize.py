@@ -1,47 +1,46 @@
 import numpy as np
-from collections import Sequence
-import torch
-from torch_geometric.nn import voxel_grid
 
-def grid_sample(pos, batch_index, size, start=None, return_p2v=True):
-    # pos: float [N, 3]
-    # batch_szie: long int
-    # size: float [3, ]
-    # start: float [3, ] / None
+# from torch_geometric.nn import voxel_grid
 
-    # print("pos.shape: {}, batch.shape: {}".format(pos.shape, batch.shape))
-    # print("size: ", size)
+# def grid_sample(pos, batch_index, size, start=None, return_p2v=True):
+#     # pos: float [N, 3]
+#     # batch_szie: long int
+#     # size: float [3, ]
+#     # start: float [3, ] / None
 
-    # batch [N, ]
-    batch = torch.zeros(pos.shape[0])
-    for i in range (1, len(batch_index)):
-        batch[batch_index[i-1]:batch_index[i]] = i
+#     # print("pos.shape: {}, batch.shape: {}".format(pos.shape, batch.shape))
+#     # print("size: ", size)
+
+#     # batch [N, ]
+#     batch = torch.zeros(pos.shape[0])
+#     for i in range (1, len(batch_index)):
+#         batch[batch_index[i-1]:batch_index[i]] = i
         
-    cluster = voxel_grid(pos, batch, size, start=start) #[N, ]
+#     cluster = voxel_grid(pos, batch, size, start=start) #[N, ]
 
-    if return_p2v == False:
-        unique, cluster = torch.unique(cluster, sorted=True, return_inverse=True)
-        return cluster
+#     if return_p2v == False:
+#         unique, cluster = torch.unique(cluster, sorted=True, return_inverse=True)
+#         return cluster
 
-    unique, cluster, counts = torch.unique(cluster, sorted=True, return_inverse=True, return_counts=True)
+#     unique, cluster, counts = torch.unique(cluster, sorted=True, return_inverse=True, return_counts=True)
 
-    # print("unique.shape: {}, cluster.shape: {}, counts.shape: {}".format(unique.shape, cluster.shape, counts.shape))
+#     # print("unique.shape: {}, cluster.shape: {}, counts.shape: {}".format(unique.shape, cluster.shape, counts.shape))
 
-    # input()
+#     # input()
 
-    # obtain p2v_map
-    n = unique.shape[0]
-    k = counts.max().item()
-    p2v_map = cluster.new_zeros(n, k) #[n, k]
-    mask = torch.arange(k).cuda().unsqueeze(0) < counts.unsqueeze(-1) #[n, k]
-    p2v_map[mask] = torch.argsort(cluster)
-    # max_point
-    max_point = 48
-    if k > max_point:
-        counts = torch.where(counts > max_point, max_point, counts)
-        p2v_map = p2v_map[:,0:max_point]
+#     # obtain p2v_map
+#     n = unique.shape[0]
+#     k = counts.max().item()
+#     p2v_map = cluster.new_zeros(n, k) #[n, k]
+#     mask = torch.arange(k).cuda().unsqueeze(0) < counts.unsqueeze(-1) #[n, k]
+#     p2v_map[mask] = torch.argsort(cluster)
+#     # max_point
+#     max_point = 48
+#     if k > max_point:
+#         counts = torch.where(counts > max_point, max_point, counts)
+#         p2v_map = p2v_map[:,0:max_point]
 
-    return cluster, p2v_map, counts
+#     return cluster, p2v_map, counts
 
 def fnv_hash_vec(arr):
     """

@@ -1,33 +1,32 @@
-import os
-import time
-import random
-import numpy as np
-import logging
 import argparse
+import os
+import random
 import shutil
+import time
+from functools import partial
 
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.parallel
 import torch.optim
-import torch.utils.data
-import torch.multiprocessing as mp
-import torch.distributed as dist
 import torch.optim.lr_scheduler as lr_scheduler
-from tensorboardX import SummaryWriter
+import torch.utils.data
+import torch_points_kernels as tp
+from torch.utils.tensorboard import SummaryWriter
 
-from util import dataset, config
+from util import config, transform
+from util.common_util import (AverageMeter, find_free_port,
+                              intersectionAndUnionGPU)
+from util.data_util import collate_fn, collate_fn_limit
+from util.logger import get_logger
+from util.lr import MultiStepWithWarmup, PolyLR, initialize_scheduler
 from util.s3dis import S3DIS
 from util.scannet_v2 import Scannetv2
-from util.common_util import AverageMeter, intersectionAndUnionGPU, find_free_port, poly_learning_rate, smooth_loss
-from util.data_util import collate_fn, collate_fn_limit
-from util import transform
-from util.logger import get_logger
 
-from functools import partial
-from util.lr import MultiStepWithWarmup, PolyLR, PolyLRwithWarmup
-import torch_points_kernels as tp
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Semantic Segmentation')
@@ -46,7 +45,7 @@ def worker_init_fn(worker_id):
 
 
 def main_process():
-    return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % args.ngpus_per_node == 0)
+    return int(os.environ["LOCAL_RANK"]) == 0
 
 
 def main():
@@ -54,10 +53,6 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
-    # import torch.backends.mkldnn
-    # ackends.mkldnn.enabled = False
-    # os.environ["LRU_CACHE_CAPACITY"] = "1"
-    # cudnn.deterministic = True
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
         np.random.seed(args.manual_seed)
@@ -67,21 +62,26 @@ def main():
         cudnn.benchmark = False
         cudnn.deterministic = True
     if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
+        if len(args.train_gpu) > 1:
+            args.world_size = int(os.environ["WORLD_SIZE"])
+        else:
+            args.world_size = 1
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
     args.ngpus_per_node = len(args.train_gpu)
     if len(args.train_gpu) == 1:
         args.sync_bn = False
         args.distributed = False
         args.multiprocessing_distributed = False
-
+    
     if args.multiprocessing_distributed:
         port = find_free_port()
         args.dist_url = f"tcp://127.0.0.1:{port}"
         args.world_size = args.ngpus_per_node * args.world_size
         mp.spawn(main_worker, nprocs=args.ngpus_per_node, args=(args.ngpus_per_node, args))
+    elif args.distributed:
+        main_worker(int(os.environ["LOCAL_RANK"]), args.ngpus_per_node, args)
     else:
-        main_worker(args.train_gpu, args.ngpus_per_node, args)
+        main_worker(0, args.ngpus_per_node, args)
 
 
 def main_worker(gpu, ngpus_per_node, argss):
@@ -156,18 +156,17 @@ def main_worker(gpu, ngpus_per_node, argss):
         if args.get("max_grad_norm", None):
             logger.info("args.max_grad_norm = {}".format(args.max_grad_norm))
 
-    if args.distributed:
-        torch.cuda.set_device(gpu)
+    if args.distributed and ngpus_per_node > 1:
         args.batch_size = int(args.batch_size / ngpus_per_node)
         args.batch_size_val = int(args.batch_size_val / ngpus_per_node)
         args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
+        torch.cuda.set_device(gpu)
         if args.sync_bn:
             if main_process():
                 logger.info("use SyncBN")
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu], find_unused_parameters=True)
-    else:
-        model = torch.nn.DataParallel(model.cuda())
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+
 
     if args.weight:
         if os.path.isfile(args.weight):
@@ -232,7 +231,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     if main_process():
             logger.info("train_data samples: '{}'".format(len(train_data)))
-    if args.distributed:
+    if args.distributed and ngpus_per_node > 1:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
     else:
         train_sampler = None
@@ -280,6 +279,9 @@ def main_worker(gpu, ngpus_per_node, argss):
             scheduler = PolyLR(optimizer, max_iter=args.epochs*iter_per_epoch, power=args.power)
         else:
             raise ValueError("No such scheduler update {}".format(args.scheduler_update))
+    elif args.scheduler == "OneCycle":
+        assert args.scheduler_update == 'step'
+        scheduler = initialize_scheduler(optimizer, args)
     else:
         raise ValueError("No such scheduler {}".format(args.scheduler))
 
@@ -339,6 +341,8 @@ def main_worker(gpu, ngpus_per_node, argss):
     if main_process():
         writer.close()
         logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
+    if args.distributed:
+        dist.destroy_process_group()
 
 
 def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
@@ -393,14 +397,14 @@ def train(train_loader, model, criterion, optimizer, epoch, scaler, scheduler):
 
         output = output.max(1)[1]
         n = coord.size(0)
-        if args.multiprocessing_distributed:
+        if args.distributed and args.ngpus_per_node > 1:
             loss *= n
             count = target.new_tensor([n], dtype=torch.long)
             dist.all_reduce(loss), dist.all_reduce(count)
             n = count.item()
             loss /= n
         intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-        if args.multiprocessing_distributed:
+        if args.distributed and args.ngpus_per_node > 1:
             dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
         intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
         intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
@@ -494,7 +498,7 @@ def validate(val_loader, model, criterion):
 
         output = output.max(1)[1]
         n = coord.size(0)
-        if args.multiprocessing_distributed:
+        if args.distributed and args.ngpus_per_node > 1:
             loss *= n
             count = target.new_tensor([n], dtype=torch.long)
             dist.all_reduce(loss), dist.all_reduce(count)
@@ -502,7 +506,7 @@ def validate(val_loader, model, criterion):
             loss /= n
 
         intersection, union, target = intersectionAndUnionGPU(output, target, args.classes, args.ignore_label)
-        if args.multiprocessing_distributed:
+        if args.distributed and args.ngpus_per_node > 1:
             dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(target)
         intersection, union, target = intersection.cpu().numpy(), union.cpu().numpy(), target.cpu().numpy()
         intersection_meter.update(intersection), union_meter.update(union), target_meter.update(target)
@@ -537,6 +541,4 @@ def validate(val_loader, model, criterion):
 
 
 if __name__ == '__main__':
-    import gc
-    gc.collect()
     main()
