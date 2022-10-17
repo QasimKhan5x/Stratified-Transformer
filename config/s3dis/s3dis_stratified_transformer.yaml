@@ -28,7 +28,6 @@ TRAIN:
   drop_path_rate: 0.3
   concat_xyz: True
   grid_size: 0.04
-  max_batch_points: 140000
   max_num_neighbors: 34 # For KPConv
   ratio: 0.25
   k: 16
@@ -39,17 +38,18 @@ TRAIN:
   jitter_sigma: 0.005
   jitter_clip: 0.02
   scheduler_update: epoch 
-  scheduler: OneCycler # MultiStep 
+  scheduler: MultiStep
   warmup: linear
   warmup_iters: 1500
   warmup_ratio: 0.000001
   use_amp: True
   optimizer: AdamW 
   ignore_label: 255
-  train_gpu: [4]
+  train_gpu: [0, 1, 2, 3]
+  max_batch_points: 600000
   workers: 16  # data loader workers
   batch_size: 8  # batch size for training
-  batch_size_val: 1  # batch size for validation during training, memory and speed tradeoff
+  batch_size_val: 4  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.006
   epochs: 100
   start_epoch: 0
@@ -67,7 +67,7 @@ TRAIN:
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 1
 Distributed:
-  dist_url: env://
+  dist_url: tcp://127.0.0.1:6789
   dist_backend: 'nccl'
   multiprocessing_distributed: False
   world_size: -1
@@ -77,7 +77,7 @@ TEST:
   test_list: dataset/s3dis/list/val5.txt
   test_list_full: dataset/s3dis/list/val5_full.txt
   split: val  # split in [train, val and test]
-  test_gpu: [4]
+  test_gpu: [0]
   test_workers: 4
   batch_size_test: 4
   model_path: # Fill the path of the trained .pth file model

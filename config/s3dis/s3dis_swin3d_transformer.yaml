@@ -1,6 +1,6 @@
 DATA:
   data_name: s3dis
-  data_root: # Fill in the pre-processed data path (which contains the .npy files)
+  data_root: /home/Pointnet_Pointnet2_pytorch/data/stanford_indoor3d
   test_area: 5
   classes: 13
   fea_dim: 6
@@ -28,7 +28,6 @@ TRAIN:
   drop_path_rate: 0.3
   concat_xyz: True
   grid_size: 0.04
-  max_batch_points: 140000
   max_num_neighbors: 34 # For KPConv
   ratio: 0.25
   k: 16
@@ -47,6 +46,7 @@ TRAIN:
   optimizer: AdamW 
   ignore_label: 255
   train_gpu: [0, 1, 2, 3]
+  max_batch_points: 600000
   workers: 16  # data loader workers
   batch_size: 8  # batch size for training
   batch_size_val: 4  # batch size for validation during training, memory and speed tradeoff
@@ -69,8 +69,8 @@ TRAIN:
 Distributed:
   dist_url: tcp://127.0.0.1:6789
   dist_backend: 'nccl'
-  multiprocessing_distributed: True
-  world_size: 1
+  multiprocessing_distributed: False
+  world_size: -1
   rank: 0
 
 TEST:

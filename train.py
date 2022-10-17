@@ -4,6 +4,7 @@ import random
 import shutil
 import time
 from functools import partial
+from math import ceil
 
 import numpy as np
 import torch
@@ -14,16 +15,17 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.optim
 import torch.optim.lr_scheduler as lr_scheduler
-import torch.utils.data
 import torch_points_kernels as tp
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.tensorboard import SummaryWriter  # type: ignore
 
 from util import config, transform
 from util.common_util import (AverageMeter, find_free_port,
                               intersectionAndUnionGPU)
 from util.data_util import collate_fn, collate_fn_limit
 from util.logger import get_logger
-from util.lr import MultiStepWithWarmup, PolyLR, initialize_scheduler
+from util.lr import MultiStepWithWarmup, PolyLR
 from util.s3dis import S3DIS
 from util.scannet_v2 import Scannetv2
 
@@ -50,34 +52,34 @@ def main_process():
 
 def main():
     args = get_parser()
-    os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(x) for x in args.train_gpu)
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
-        np.random.seed(args.manual_seed)
+        np.random.seed(args.manual_seed) # type: ignore
         torch.manual_seed(args.manual_seed)
         torch.cuda.manual_seed(args.manual_seed)
         torch.cuda.manual_seed_all(args.manual_seed)
         cudnn.benchmark = False
         cudnn.deterministic = True
-    if args.dist_url == "env://" and args.world_size == -1:
-        if len(args.train_gpu) > 1:
-            args.world_size = int(os.environ["WORLD_SIZE"])
-        else:
-            args.world_size = 1
-    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-    args.ngpus_per_node = len(args.train_gpu)
-    if len(args.train_gpu) == 1:
+    if len(args.train_gpu) > 1:
+        dist.init_process_group(backend="nccl")
+        args.world_size = len(args.train_gpu)
+        args.distributed = True
+        # dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
+    else:
+        args.world_size = 1
         args.sync_bn = False
         args.distributed = False
         args.multiprocessing_distributed = False
     
+    args.ngpus_per_node = args.world_size
+            
     if args.multiprocessing_distributed:
         port = find_free_port()
         args.dist_url = f"tcp://127.0.0.1:{port}"
         args.world_size = args.ngpus_per_node * args.world_size
-        mp.spawn(main_worker, nprocs=args.ngpus_per_node, args=(args.ngpus_per_node, args))
+        mp.spawn(main_worker, nprocs=args.ngpus_per_node, args=(args.ngpus_per_node, args)) # type: ignore
     elif args.distributed:
         main_worker(int(os.environ["LOCAL_RANK"]), args.ngpus_per_node, args)
     else:
@@ -88,42 +90,31 @@ def main_worker(gpu, ngpus_per_node, argss):
     global args, best_iou
     args, best_iou = argss, 0
     if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
-            args.rank = int(os.environ["RANK"])
+        args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
             args.rank = args.rank * ngpus_per_node + gpu
-        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
     
     # get model
+    args.patch_size = args.grid_size * args.patch_size
+    args.window_size = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
+    args.grid_sizes = [args.patch_size * (2**i) for i in range(args.num_layers)]
+    args.quant_sizes = [args.quant_size * (2**i) for i in range(args.num_layers)]
     if args.arch == 'stratified_transformer':
-        
         from model.stratified_transformer import Stratified
 
-        args.patch_size = args.grid_size * args.patch_size
-        args.window_size = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
-        args.grid_sizes = [args.patch_size * (2**i) for i in range(args.num_layers)]
-        args.quant_sizes = [args.quant_size * (2**i) for i in range(args.num_layers)]
-
         model = Stratified(args.downsample_scale, args.depths, args.channels, args.num_heads, args.window_size, \
-            args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, \
-            rel_key=args.rel_key, rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, concat_xyz=args.concat_xyz, num_classes=args.classes, \
-            ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer)
-
+            args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, rel_key=args.rel_key, \
+            rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, concat_xyz=args.concat_xyz, \
+            num_classes=args.classes, ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, \
+            num_layers=args.num_layers, stem_transformer=args.stem_transformer)
     elif args.arch == 'swin3d_transformer':
-        
         from model.swin3d_transformer import Swin
 
-        args.patch_size = args.grid_size * args.patch_size
-        args.window_sizes = [args.patch_size * args.window_size * (2**i) for i in range(args.num_layers)]
-        args.grid_sizes = [args.patch_size * (2**i) for i in range(args.num_layers)]
-        args.quant_sizes = [args.quant_size * (2**i) for i in range(args.num_layers)]
-
-        model = Swin(args.depths, args.channels, args.num_heads, \
-            args.window_sizes, args.up_k, args.grid_sizes, args.quant_sizes, rel_query=args.rel_query, \
-            rel_key=args.rel_key, rel_value=args.rel_value, drop_path_rate=args.drop_path_rate, \
-            concat_xyz=args.concat_xyz, num_classes=args.classes, \
-            ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, stem_transformer=args.stem_transformer)
-
+        model = Swin(args.depths, args.channels, args.num_heads, args.window_size, args.up_k, args.grid_sizes, \
+            args.quant_sizes, rel_query=args.rel_query, rel_key=args.rel_key, rel_value=args.rel_value, \
+            drop_path_rate=args.drop_path_rate, concat_xyz=args.concat_xyz, num_classes=args.classes, \
+            ratio=args.ratio, k=args.k, prev_grid_size=args.grid_size, sigma=1.0, num_layers=args.num_layers, \
+            stem_transformer=args.stem_transformer)
     else:
         raise Exception('architecture {} not supported yet'.format(args.arch))
     
@@ -143,6 +134,8 @@ def main_worker(gpu, ngpus_per_node, argss):
             },
         ]
         optimizer = torch.optim.AdamW(param_dicts, lr=args.base_lr, weight_decay=args.weight_decay)
+    else:
+        raise Exception('optimizer {} not supported yet'.format(args.optimizer))
 
     if main_process():
         global logger, writer
@@ -158,14 +151,16 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     if args.distributed and ngpus_per_node > 1:
         args.batch_size = int(args.batch_size / ngpus_per_node)
-        args.batch_size_val = int(args.batch_size_val / ngpus_per_node)
+        args.batch_size_val = ceil(args.batch_size_val / ngpus_per_node)
         args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
         torch.cuda.set_device(gpu)
         if args.sync_bn:
             if main_process():
                 logger.info("use SyncBN")
-            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    else:
+        model = nn.DataParallel(model, device_ids=[gpu]) # type: ignore
 
 
     if args.weight:
@@ -232,10 +227,10 @@ def main_worker(gpu, ngpus_per_node, argss):
     if main_process():
             logger.info("train_data samples: '{}'".format(len(train_data)))
     if args.distributed and ngpus_per_node > 1:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+        train_sampler = DistributedSampler(train_data)
     else:
         train_sampler = None
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, \
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, \
         pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=partial(collate_fn_limit, max_batch_points=args.max_batch_points, logger=logger if main_process() else None))
 
     val_transform = None
@@ -247,11 +242,11 @@ def main_worker(gpu, ngpus_per_node, argss):
         raise ValueError("The dataset {} is not supported.".format(args.data_name))
 
     if args.distributed:
-        val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
+        val_sampler = DistributedSampler(val_data)
     else:
         val_sampler = None
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, \
-            pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
+    val_loader = DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, 
+                            pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
     
     # set scheduler
     if args.scheduler == "MultiStepWithWarmup":
@@ -281,7 +276,8 @@ def main_worker(gpu, ngpus_per_node, argss):
             raise ValueError("No such scheduler update {}".format(args.scheduler_update))
     elif args.scheduler == "OneCycle":
         assert args.scheduler_update == 'step'
-        scheduler = initialize_scheduler(optimizer, args)
+        from torch.optim.lr_scheduler import OneCycleLR
+        scheduler = OneCycleLR(optimizer, max_lr=0.1, epochs=args.epochs, steps_per_epoch=len(train_loader))
     else:
         raise ValueError("No such scheduler {}".format(args.scheduler))
 

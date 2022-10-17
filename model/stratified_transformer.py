@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
+from lib.pointops2.functions import pointops
+from timm.models.layers import DropPath, trunc_normal_
+from torch_geometric.nn import voxel_grid
+from torch_points3d.core.common_modules import FastBatchNorm1d
 from torch_points3d.modules.KPConv.kernels import KPConvLayer
 from torch_scatter import scatter_softmax
-from timm.models.layers import DropPath, trunc_normal_
-from torch_points3d.core.common_modules import FastBatchNorm1d
-from torch_geometric.nn import voxel_grid
-from lib.pointops2.functions import pointops
+
 
 def get_indice_pairs(p2v_map, counts, new_p2v_map, new_counts, downsample_idx, batch, xyz, window_size, i):
     # p2v_map: [n, k]

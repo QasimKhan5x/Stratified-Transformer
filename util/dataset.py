@@ -32,7 +32,7 @@ class PointData(Dataset):
         data_path = self.data_list[index]
         f = h5py.File(data_path, 'r')
         data = f['data'][:]
-        if self.split is 'test':
+        if self.split == 'test':
             label = 255  # place holder
         else:
             label = f['label'][:]

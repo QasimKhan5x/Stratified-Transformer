@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
-from lib.pointops2.functions import pointops
-from timm.models.layers import DropPath, trunc_normal_
-from torch_geometric.nn import voxel_grid
-from torch_points3d.core.common_modules import FastBatchNorm1d
 from torch_points3d.modules.KPConv.kernels import KPConvLayer
 from torch_scatter import scatter_softmax
+from timm.models.layers import DropPath, trunc_normal_
+from torch_points3d.core.common_modules import FastBatchNorm1d
+from torch_geometric.nn import voxel_grid
+from lib.pointops2.functions import pointops
 
 
 def grid_sample(pos, batch, size, start, return_p2v=True):
@@ -149,7 +149,7 @@ class WindowAttention(nn.Module):
         attn_flat = pointops.attention_step1_v2(query.float(), key.float(), index_1.int(), index_0_offsets.int(), n_max)
 
         xyz_quant = (xyz - xyz.min(0)[0] + shift_size) % self.window_size
-        xyz_quant = torch.div(xyz_quant, self.quant_size, rounding_mode='floor') #[N, 3]
+        xyz_quant = xyz_quant // self.quant_size #[N, 3]
         relative_position = xyz_quant[index_0] - xyz_quant[index_1] #[M, 3]
         relative_position_index = self.map_func(relative_position) #[M, 3]
         
