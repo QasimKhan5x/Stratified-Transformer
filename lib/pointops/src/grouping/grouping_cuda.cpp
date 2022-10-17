@@ -1,7 +1,6 @@
 #include <torch/serialize/tensor.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <vector>
-#include <THC/THC.h>
 
 #include "grouping_cuda_kernel.h"
 

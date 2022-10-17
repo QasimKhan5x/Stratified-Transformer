@@ -1,6 +1,5 @@
 #include <torch/serialize/tensor.h>
 #include <vector>
-#include <THC/THC.h>
 #include <ATen/cuda/CUDAContext.h>
 
 #include "featuredistribute_cuda_kernel.h"
