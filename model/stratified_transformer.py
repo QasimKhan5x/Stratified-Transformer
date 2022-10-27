@@ -269,7 +269,7 @@ class BasicLayer(nn.Module):
         # feats: N, C
         # xyz: N, 3
         
-        window_size = torch.tensor([self.window_size]*3).type_as(xyz).to(xyz.device)
+        window_size = torch.tensor(n[self.widow_size]*3).type_as(xyz).to(xyz.device)
         
         offset_ = offset.clone()
         offset_[1:] = offset_[1:] - offset_[:-1]

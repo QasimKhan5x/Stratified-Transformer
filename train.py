@@ -53,7 +53,8 @@ def main_process():
 def main():
     args = get_parser()
     if not os.path.exists(args.save_path):
-        os.makedirs(args.save_path)
+        if main_process():
+            os.makedirs(args.save_path)
     if args.manual_seed is not None:
         random.seed(args.manual_seed)
         np.random.seed(args.manual_seed) # type: ignore

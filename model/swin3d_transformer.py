@@ -7,6 +7,8 @@ from torch_points3d.core.common_modules import FastBatchNorm1d
 from torch_points3d.modules.KPConv.kernels import KPConvLayer
 from torch_scatter import scatter_softmax
 
+from model.hog import compute_hog
+
 
 def grid_sample(pos, batch, size, start, return_p2v=True):
     # pos: float [N, 3]
@@ -238,7 +240,11 @@ class BasicLayer(nn.Module):
         batch = torch.cat([torch.tensor([ii]*o) for ii,o in enumerate(offset_)], 0).long().cuda()
 
         v2p_map, p2v_map, counts = grid_sample(xyz, batch, window_size, start=None)
-
+        # add histogram of oriented gradients to features
+        # print("=========== FEATS 1 ============", feats.shape)
+        feats = torch.cat((feats, compute_hog(xyz, self.window_size, offset, batch, window_maps=(v2p_map, p2v_map))), dim=1)
+        # feats = feats.contiguous()
+        # print("=========== FEATS 2 ============", feats.shape)
         N, C = feats.shape
         n, k = p2v_map.shape
         mask = torch.arange(k).unsqueeze(0).cuda() < counts.unsqueeze(-1) #[n, k]
@@ -328,7 +334,6 @@ class KPConvSimpleBlock(nn.Module):
         feats = self.activation(self.bn(feats))
         return feats
 
-
 class KPConvResBlock(nn.Module):
     def __init__(self, in_channels, out_channels, prev_grid_size, sigma=1.0, negative_slope=0.2, bn_momentum=0.02):
         super().__init__()
@@ -368,6 +373,7 @@ class Swin(nn.Module):
         super().__init__()
         
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+        self.init_window_size = window_sizes[0]
 
         if stem_transformer:
             self.stem_layer = nn.ModuleList([
@@ -381,11 +387,16 @@ class Swin(nn.Module):
             ])
             self.downsample = TransitionDown(channels[0], channels[1], ratio, k)
             self.layer_start = 1
-
+         
+        # increase number of channels to accomodate for additional HOG features
+        # print (" =============== Channels 1 ================", channels)
+        channels = [c + 18 for c in channels]
+        # print (" =============== Channels 2 ================", channels)
+        
         self.layers = nn.ModuleList([BasicLayer(depths[i], channels[i], num_heads[i], window_sizes[i], grid_sizes[i], \
             quant_sizes[i], rel_query=rel_query, rel_key=rel_key, rel_value=rel_value, \
             drop_path=dpr[sum(depths[:i]):sum(depths[:i+1])], downsample=TransitionDown if i < num_layers-1 else None, \
-            ratio=ratio, k=k, out_channels=channels[i+1] if i < num_layers-1 else None) for i in range(self.layer_start, num_layers)])
+            ratio=ratio, k=k, out_channels=channels[i+1]-18 if i < num_layers-1 else None) for i in range(self.layer_start, num_layers)])
 
         self.upsamples = nn.ModuleList([Upsample(up_k, channels[i], channels[i-1]) for i in range(num_layers-1, 0, -1)])
         
@@ -403,7 +414,7 @@ class Swin(nn.Module):
         feats_stack = []
         xyz_stack = []
         offset_stack = []
-
+        
         for i, layer in enumerate(self.stem_layer):
             feats = layer(feats, xyz, batch, neighbor_idx)
 

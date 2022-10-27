@@ -1,6 +1,6 @@
 DATA:
   data_name: s3dis
-  data_root: /home/Pointnet_Pointnet2_pytorch/data/stanford_indoor3d
+  data_root: /home/data/stanford_indoor3d
   test_area: 5
   classes: 13
   fea_dim: 6

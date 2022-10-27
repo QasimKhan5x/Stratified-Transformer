@@ -22,8 +22,8 @@ TRAIN:
   patch_size: 1 
   window_size: 4
   depths: [2, 2, 6, 2] 
-  channels: [48, 96, 192, 384] 
-  num_heads: [3, 6, 12, 24] 
+  channels: [46, 110, 174, 366] 
+  num_heads: [4, 8, 12, 24] 
   up_k: 3
   drop_path_rate: 0.3
   concat_xyz: True
@@ -45,13 +45,13 @@ TRAIN:
   use_amp: True
   optimizer: AdamW 
   ignore_label: 255
-  train_gpu: [0, 1]
+  train_gpu: [0, 1, 2, 3]
   max_batch_points: 650000
   workers: 16  # data loader workers
-  batch_size: 16  # batch size for training
-  batch_size_val: 16  # batch size for validation during training, memory and speed tradeoff
+  batch_size: 32  # batch size for training
+  batch_size_val: 32  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.006
-  epochs: 1000
+  epochs: 100
   start_epoch: 0
   step_epoch: 30
   multiplier: 0.1
@@ -61,7 +61,7 @@ TRAIN:
   manual_seed: 123
   print_freq: 1
   save_freq: 1
-  save_path: runs/s3dis_swin3d_transformer_h
+  save_path: runs/s3dis_swin3d_transformer_hog
   weight:  # path to initial weight (default: none)
   resume:  # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
