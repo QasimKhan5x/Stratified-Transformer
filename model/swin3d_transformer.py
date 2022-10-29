@@ -78,6 +78,78 @@ class TransitionDown(nn.Module):
         feats = self.pool(feats).squeeze(-1)  # (m, c)
         
         return feats, n_xyz, n_offset
+    
+class Upsample(nn.Module):
+    def __init__(self, k, in_channels, out_channels, bn_momentum=0.02):
+        super().__init__()
+        self.k = k
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        self.linear1 = nn.Sequential(nn.LayerNorm(
+            out_channels), nn.Linear(out_channels, out_channels))
+        self.linear2 = nn.Sequential(nn.LayerNorm(
+            in_channels), nn.Linear(in_channels, out_channels))
+
+    def forward(self, feats, xyz, support_xyz, offset, support_offset, support_feats=None):
+
+        feats = self.linear1(support_feats) + pointops.interpolation(xyz,
+                                                                     support_xyz, self.linear2(feats), offset, support_offset)
+        return feats, support_xyz, support_offset
+
+class KPConvSimpleBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, prev_grid_size, sigma=1.0, negative_slope=0.2, bn_momentum=0.02):
+        super().__init__()
+        self.kpconv = KPConvLayer(
+            in_channels, out_channels, point_influence=prev_grid_size * sigma, add_one=False)
+        self.bn = FastBatchNorm1d(out_channels, momentum=bn_momentum)
+        self.activation = nn.LeakyReLU(negative_slope=negative_slope)
+
+    def forward(self, feats, xyz, batch, neighbor_idx):
+        # feats: [N, C]
+        # xyz: [N, 3]
+        # batch: [N,]
+        # neighbor_idx: [N, M]
+
+        feats = self.kpconv(xyz, xyz, neighbor_idx, feats)
+        feats = self.activation(self.bn(feats))
+        return feats
+
+class KPConvResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, prev_grid_size, sigma=1.0, negative_slope=0.2, bn_momentum=0.02):
+        super().__init__()
+        d_2 = out_channels // 4
+        activation = nn.LeakyReLU(negative_slope=negative_slope)
+        self.unary_1 = torch.nn.Sequential(nn.Linear(
+            in_channels, d_2, bias=False), FastBatchNorm1d(d_2, momentum=bn_momentum), activation)
+        self.unary_2 = torch.nn.Sequential(nn.Linear(d_2, out_channels, bias=False), FastBatchNorm1d(
+            out_channels, momentum=bn_momentum), activation)
+        self.kpconv = KPConvLayer(
+            d_2, d_2, point_influence=prev_grid_size * sigma, add_one=False)
+        self.bn = FastBatchNorm1d(out_channels, momentum=bn_momentum)
+        self.activation = activation
+
+        if in_channels != out_channels:
+            self.shortcut_op = torch.nn.Sequential(
+                nn.Linear(in_channels, out_channels, bias=False), FastBatchNorm1d(
+                    out_channels, momentum=bn_momentum)
+            )
+        else:
+            self.shortcut_op = nn.Identity()
+
+    def forward(self, feats, xyz, batch, neighbor_idx):
+        # feats: [N, C]
+        # xyz: [N, 3]
+        # batch: [N,]
+        # neighbor_idx: [N, M]
+
+        shortcut = feats
+        feats = self.unary_1(feats)
+        feats = self.kpconv(xyz, xyz, neighbor_idx, feats)
+        feats = self.unary_2(feats)
+        shortcut = self.shortcut_op(shortcut)
+        feats += shortcut
+        return feats
 
 
 class WindowAttention(nn.Module):
@@ -301,71 +373,6 @@ class BasicLayer(nn.Module):
             
         return feats, xyz, offset, feats_down, xyz_down, offset_down
 
-
-class Upsample(nn.Module):
-    def __init__(self, k, in_channels, out_channels, bn_momentum=0.02):
-        super().__init__()
-        self.k = k
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        self.linear1 = nn.Sequential(nn.LayerNorm(out_channels), nn.Linear(out_channels, out_channels))
-        self.linear2 = nn.Sequential(nn.LayerNorm(in_channels), nn.Linear(in_channels, out_channels))
-
-    def forward(self, feats, xyz, support_xyz, offset, support_offset, support_feats=None):
-
-        feats = self.linear1(support_feats) + pointops.interpolation(xyz, support_xyz, self.linear2(feats), offset, support_offset)
-        return feats, support_xyz, support_offset
-
-class KPConvSimpleBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, prev_grid_size, sigma=1.0, negative_slope=0.2, bn_momentum=0.02):
-        super().__init__()
-        self.kpconv = KPConvLayer(in_channels, out_channels, point_influence=prev_grid_size * sigma, add_one=False)
-        self.bn = FastBatchNorm1d(out_channels, momentum=bn_momentum)
-        self.activation = nn.LeakyReLU(negative_slope=negative_slope)
-
-    def forward(self, feats, xyz, batch, neighbor_idx):
-        # feats: [N, C]
-        # xyz: [N, 3]
-        # batch: [N,]
-        # neighbor_idx: [N, M]
-
-        feats = self.kpconv(xyz, xyz, neighbor_idx, feats)
-        feats = self.activation(self.bn(feats))
-        return feats
-
-class KPConvResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, prev_grid_size, sigma=1.0, negative_slope=0.2, bn_momentum=0.02):
-        super().__init__()
-        d_2 = out_channels // 4
-        activation = nn.LeakyReLU(negative_slope=negative_slope)
-        self.unary_1 = torch.nn.Sequential(nn.Linear(in_channels, d_2, bias=False), FastBatchNorm1d(d_2, momentum=bn_momentum), activation)
-        self.unary_2 = torch.nn.Sequential(nn.Linear(d_2, out_channels, bias=False), FastBatchNorm1d(out_channels, momentum=bn_momentum), activation)
-        self.kpconv = KPConvLayer(d_2, d_2, point_influence=prev_grid_size * sigma, add_one=False)
-        self.bn = FastBatchNorm1d(out_channels, momentum=bn_momentum)
-        self.activation = activation
-
-        if in_channels != out_channels:
-            self.shortcut_op = torch.nn.Sequential(
-                nn.Linear(in_channels, out_channels, bias=False), FastBatchNorm1d(out_channels, momentum=bn_momentum)
-            )
-        else:
-            self.shortcut_op = nn.Identity()
-
-    def forward(self, feats, xyz, batch, neighbor_idx):
-        # feats: [N, C]
-        # xyz: [N, 3]
-        # batch: [N,]
-        # neighbor_idx: [N, M]
-        
-        shortcut = feats
-        feats = self.unary_1(feats)
-        feats = self.kpconv(xyz, xyz, neighbor_idx, feats)
-        feats = self.unary_2(feats)
-        shortcut = self.shortcut_op(shortcut)
-        feats += shortcut
-        return feats
-
 class Swin(nn.Module):
     def __init__(self, depths, channels, num_heads, window_sizes, up_k, \
             grid_sizes, quant_sizes, rel_query=True, rel_key=False, rel_value=False, drop_path_rate=0.2, \
@@ -389,9 +396,7 @@ class Swin(nn.Module):
             self.layer_start = 1
          
         # increase number of channels to accomodate for additional HOG features
-        # print (" =============== Channels 1 ================", channels)
         channels = [c + 18 for c in channels]
-        # print (" =============== Channels 2 ================", channels)
         
         self.layers = nn.ModuleList([BasicLayer(depths[i], channels[i], num_heads[i], window_sizes[i], grid_sizes[i], \
             quant_sizes[i], rel_query=rel_query, rel_key=rel_key, rel_value=rel_value, \

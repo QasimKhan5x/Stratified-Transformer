@@ -45,11 +45,11 @@ TRAIN:
   use_amp: True
   optimizer: AdamW 
   ignore_label: 255
-  train_gpu: [0, 1, 2, 3]
+  train_gpu: [0, 1, 2, 3, 4]
   max_batch_points: 650000
   workers: 16  # data loader workers
-  batch_size: 32  # batch size for training
-  batch_size_val: 32  # batch size for validation during training, memory and speed tradeoff
+  batch_size: 40  # batch size for training
+  batch_size_val: 40  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.006
   epochs: 100
   start_epoch: 0
@@ -63,7 +63,7 @@ TRAIN:
   save_freq: 1
   save_path: runs/s3dis_swin3d_transformer_hog
   weight:  # path to initial weight (default: none)
-  resume:  # path to latest checkpoint (default: none)
+  resume: runs/s3dis_swin3d_transformer_hog/model/model_last.pth # path to latest checkpoint (default: none)
   evaluate: True  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
   eval_freq: 1
 Distributed:
