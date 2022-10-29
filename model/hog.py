@@ -1,10 +1,8 @@
-import os
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from lib.pointops2.functions import pointops
-from scipy.linalg import svd
 from torch_geometric.nn import voxel_grid
 
 
@@ -34,7 +32,9 @@ def grid_sample(pos, batch, size, start, return_p2v=True):
     return cluster, p2v_map, counts
 
 
-def compute_hog(xyz, window_size, offset, batch, window_maps=None, k=40, choice="knn", radius=0.1):
+def compute_hog(xyz, window_size, offset, batch, 
+                window_maps=None, k=40, choice="knn", 
+                radius=0.1, orthonormals=False):
     '''
     xyz: (n, 3) = coordinates of all points
     window_size: float = size of window
@@ -164,4 +164,8 @@ def compute_hog(xyz, window_size, offset, batch, window_maps=None, k=40, choice=
                                                     dim=0, index=v2p_map)
                 histogram[:, (c + 1) % 9 + 9] += torch.gather(
                     second_bin_sums[:, c], dim=0, index=v2p_map)
-    return histogram
+    if orthonormals:
+        # histogram + orthonormals
+        return histogram, torch.from_numpy(v[:, :, 2]).cuda(device)
+    else:
+        return histogram
